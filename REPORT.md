@@ -8,7 +8,7 @@
 
 ## 1. GENERAL INFORMATION & DELIVERABLE LINKS
 * **Team Members:**
-  1. Nguyen Hoang Long — Student ID: 22IT111 — Role: Solo Developer (Frontend, Backend, Infrastructure) — Contribution: 100%
+  1. Nguyen Hoang Long — Student ID: 23IT.B119 — Role: Solo Developer (Frontend, Backend, Infrastructure) — Contribution: 100%
 * **🔗 Live Demo URL:** https://vku-field-survey-78z.pages.dev
 * **💻 GitHub Repository:** https://github.com/TieuLong07/vku-field-survey-pwa
 * **🎥 Video Demo (Optional):** — (link submitted separately if applicable)
@@ -28,7 +28,7 @@
 
 ---
 
-## 3. TECHNECTNICAL ARCHITECTURE & PROJECT STRUCTURE
+## 3. TECHNICAL ARCHITECTURE & PROJECT STRUCTURE
 
 ```
 vku-field-survey-pwa/
@@ -107,15 +107,18 @@ Camera/GPS → SurveyForm → handleSurveySubmit()
 
 ## 5. TECHNICAL CHALLENGES & RESOLUTIONS
 
-### Challenge 1: Google Apps Script V8 Runtime + `crypto` Module Missing
-**Problem:** The PWA build pipeline (Vite + `workbox-build`) requires Node.js `crypto` module. When running `vite build` via `NODE_OPTIONS`, Apps Script V8 runtime threw `Module not found: crypto`. This also affected the build environment where `crypto` was unavailable under certain loader paths.
+### Challenge 1: Node.js `crypto` / WebCrypto Availability During Build (`vite build` fails without polyfill)
+**Problem:** The project's own `vite.config.ts` does `import crypto from 'node:crypto'` at the top to backfill `globalThis.crypto` (and `workbox-build`'s hashing code also relies on the WebCrypto global during `generateSW`). On Node versions / loader paths where `globalThis.crypto` is undefined, `npm run build` failed outright before Vite even started transforming modules.
 
-**Resolution:** Created `crypto-polyfill.cjs` — a one-line shim (`globalThis.crypto = require('crypto')`) injected via `NODE_OPTIONS='--require ./crypto-polyfill.cjs'` at build time. This decoupled the build toolchain's `crypto` dependency from both the Apps Script runtime and the browser target, allowing clean production builds without polyfill leakage into the client bundle.
+**Resolution:** Two complementary shims, both local to this repo:
+1. `vite.config.ts` top-of-file guard — patches `globalThis.crypto` from `node:crypto` at config-load time.
+2. `crypto-polyfill.cjs` — same backfill, injected one process earlier via `NODE_OPTIONS='--require ./crypto-polyfill.cjs'` in the `dev` / `build` npm scripts, so tooling (`vite`, `workbox-build`) sees a defined `crypto` before any module evaluation.
+Neither shim is bundled into the client output (load-bearing only at build/dev time); the PWA runtime uses the browser's native WebCrypto.
 
 ### Challenge 2: Apps Script `mode: 'no-cors'` Silently Swallows Server Response
 **Problem:** The PWA sends POST data to Apps Script via `fetch()` with `mode: 'no-cors'` (required because Apps Script responses are opaque to cross-origin callers without explicit CORS headers). This means `response.status` is always `0` and `response.body` is unreadable — making it impossible to confirm whether data actually arrived in Google Sheets or the script silently failed.
 
-**Resolution:** Implemented a two-layer verification approach:
-1. **Frontend assumption:** On HTTP 200 from `no-cors`, assume success and delete local records (App design choice — avoids phantom "pending forever" state).
-2. **Backend verification:** Added `doGet()` health check endpoint (version + `driveAccess` status) to Apps Script, callable independently via GET to confirm the script is alive and authorized.
-3. **Sheet as source of truth:** Users can cross-reference the Google Sheet directly — rows appear within seconds of sync, providing a manual audit trail if needed.
+**Resolution:** Acknowledged the trade-off explicitly in code (`src/services/syncService.ts`):
+1. **Fetch-level failure only:** The `try / catch` around `fetch()` catches *transport* failures (offline, DNS, abort) — records are kept locally and the user is notified to retry.
+2. **Server-level failure is invisible:** An opaque `no-cors` response always resolves successfully even if the Apps Script threw internally (e.g. the real production incident where `DriveApp` threw a permission error and zero rows were written while the PWA reported "success" and deleted local records). Mitigation added on the backend: `Code.gs` wraps all Drive calls in `try / catch` so permission gaps degrade to plain-text photo columns instead of aborting the row insert.
+3. **Out-of-band verification:** `doGet()` health endpoint (returns `version` + `driveAccess` flag) plus the Google Sheet itself as source of truth — verified manually during development with `curl` GET/POST against the production `/exec` URL.
