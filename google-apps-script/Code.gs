@@ -3,33 +3,70 @@
  * VKU FIELD SURVEY PWA - BACKEND SERVERLESS (GOOGLE APPS SCRIPT)
  * Trường Đại học Công nghệ Thông tin và Truyền thông Việt - Hàn (VKU)
  * =========================================================================
- * 
- * HƯỚNG DẪN THIẾT LẬP:
- * 1. Mở Google Sheets mới: https://sheets.new
- * 2. Đặt tên trang tính: "VKU_Field_Survey_Data"
- * 3. Vào menu: Tiện ích mở rộng (Extensions) -> Apps Script
- * 4. Dán toàn bộ nội dung file này vào editor và nhấn Lưu (Ctrl + S)
- * 5. Nhấn "Triển khai" (Deploy) -> "Tùy chọn triển khai mới" (New deployment)
- * 6. Chọn loại: "Ứng dụng web" (Web app)
- *    - Mô tả: "VKU Survey Sync API v1"
- *    - Thực thi dưới dạng (Execute as): "Tôi" (Me - địa chỉ email của bạn)
- *    - Ai có quyền truy cập (Who has access): "Bất kỳ ai" (Anyone)
- * 7. Nhấn "Triển khai" -> Cấp quyền cho Script -> Copy URL dạng:
- *    https://script.google.com/macros/s/.../exec
- * 8. Dán URL trên vào mục "Cài đặt Webhook" trên ứng dụng VKU Survey PWA.
+ *
+ * HƯỚNG DẪN CẬP NHẬT:
+ * 1. Mở Sheet VKU_Field_Survey_Data → Tiện ích mở rộng → Apps Script
+ * 2. Xóa TOÀN BỘ code cũ, dán TOÀN BỘ nội dung file này vào editor
+ * 3. Ctrl+S lưu, rồi Triển khai lại (New deployment / Update)
+ *    - Loại: Web app, Execute as: Tôi, Access: Bất kỳ ai
  */
 
 const SHEET_NAME = 'SurveyLogs';
+const TARGET_SHEET_ID = '1W0r0bi6EApv2kiRdyDDqwDJr4mSztKFZJI4WDg8q0C8';
+const PHOTO_FOLDER_NAME = 'VKU_Survey_Photos';
 
 /**
- * Xử lý yêu cầu POST gửi từ VKU Survey PWA
+ * Tạo hoặc tìm folder lưu ảnh trên Google Drive
+ */
+function getOrCreatePhotoFolder() {
+  const folders = DriveApp.getFoldersByName(PHOTO_FOLDER_NAME);
+  if (folders.hasNext()) {
+    return folders.next();
+  }
+  const folder = DriveApp.createFolder(PHOTO_FOLDER_NAME);
+  folder.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  Logger.log('Đã tạo folder ảnh: ' + folder.getUrl());
+  return folder;
+}
+
+/**
+ * Decode base64 data URL → file on Drive, returns { id, url }
+ * Trả về null nếu không upload được (để fallback text)
+ */
+function uploadPhotoToDrive(dataUrl, filename, folder) {
+  if (!dataUrl || dataUrl.length < 100) return null;
+
+  // Parse data URL: "data:image/jpeg;base64,AAAA..."
+  const match = dataUrl.match(/^data:image\/(\w+);base64,(.+)$/);
+  if (!match) return null;
+
+  const ext = match[1] === 'jpeg' ? 'jpg' : match[1];
+  const b64Data = match[2];
+  const mimeType = 'image/' + (match[1] === 'jpeg' ? 'jpeg' : match[1]);
+
+  const blob = Utilities.newBlob(
+    Utilities.base64Decode(b64Data),
+    mimeType,
+    filename + '.' + ext
+  );
+
+  const file = folder.createFile(blob);
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+  return {
+    id: file.getId(),
+    url: 'https://drive.google.com/uc?export=view&id=' + file.getId(),
+    directLink: file.getUrl()
+  };
+}
+
+/**
+ * Xử lý yêu cầu POST từ VKU Survey PWA
  */
 function doPost(e) {
-  // Sử dụng LockService để tránh xung đột dữ liệu khi nhiều sinh viên/cán bộ gửi đồng thời
   const lock = LockService.getScriptLock();
-  
+
   try {
-    // Chờ tối đa 30 giây để lấy quyền ghi lock
     const success = lock.tryLock(30000);
     if (!success) {
       return ContentService.createTextOutput(JSON.stringify({
@@ -38,10 +75,9 @@ function doPost(e) {
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const ss = SpreadsheetApp.openById(TARGET_SHEET_ID);
     let sheet = ss.getSheetByName(SHEET_NAME);
 
-    // Nếu trang tính chưa tồn tại, tự động tạo mới và định dạng Header
     if (!sheet) {
       sheet = ss.insertSheet(SHEET_NAME);
       const headers = [
@@ -52,11 +88,10 @@ function doPost(e) {
         'Tình trạng',
         'Ghi chú',
         'Tọa độ GPS',
-        'Ảnh hiện trường (Base64 / Image Link)'
+        'Ảnh hiện trường'
       ];
       sheet.appendRow(headers);
-      
-      // Định dạng Header phong cách thương hiệu VKU
+
       const headerRange = sheet.getRange(1, 1, 1, headers.length);
       headerRange.setBackground('#0054A6');
       headerRange.setFontColor('#FFFFFF');
@@ -65,7 +100,6 @@ function doPost(e) {
       sheet.setFrozenRows(1);
     }
 
-    // Phân tích dữ liệu JSON nhận được
     let postData = {};
     if (e.postData && e.postData.contents) {
       postData = JSON.parse(e.postData.contents);
@@ -76,14 +110,20 @@ function doPost(e) {
     const records = postData.records || (postData.record ? [postData.record] : []);
     let insertedCount = 0;
 
+    // Tạo folder ảnh (chỉ 1 lần, reuse nếu có sẵn)
+    const photoFolder = getOrCreatePhotoFolder();
+
     for (let i = 0; i < records.length; i++) {
       const rec = records[i];
-      
-      // Xử lý ảnh: Cắt ngắn hiển thị hoặc lưu Drive nếu chuỗi Base64 quá dài
-      let photoDisplay = rec.photoBase64 || '';
-      if (photoDisplay.length > 50000) {
-        // Tránh vượt quá giới hạn 50,000 ký tự trong 1 ô Google Sheets
-        photoDisplay = photoDisplay.substring(0, 49990) + '...[TRUNCATED]';
+
+      // Upload ảnh lên Drive, lấy link
+      let photoUrl = '';
+      if (rec.photoBase64 && rec.photoBase64.length > 100) {
+        const photoName = 'survey_' + (rec.formattedTime || Date.now()).replace(/[\/\\: ]/g, '-') + '_' + i;
+        const uploadResult = uploadPhotoToDrive(rec.photoBase64, photoName, photoFolder);
+        if (uploadResult) {
+          photoUrl = uploadResult.url;
+        }
       }
 
       const row = [
@@ -94,17 +134,34 @@ function doPost(e) {
         rec.condition || 'Bình thường',
         rec.notes || '',
         rec.gps || '',
-        photoDisplay
+        photoUrl  // Google Drive direct link → dùng =IMAGE() trong Sheet
       ];
 
       sheet.appendRow(row);
       insertedCount++;
     }
 
+    // Đặt công thức IMAGE() cho cột 8 (Ảnh hiện trường)
+    // Chỉ xử lý các hàng vừa thêm (không đụng hàng cũ)
+    const lastRow = sheet.getLastRow();
+    const totalRows = sheet.getMaxRows();
+    const formulaStartRow = lastRow - insertedCount + 1;
+    for (let r = formulaStartRow; r <= lastRow; r++) {
+      const cell = sheet.getRange(r, 8);  // cột H = 8
+      const rawValue = cell.getValue();
+      if (rawValue && rawValue.startsWith('https://drive.google.com')) {
+        cell.setFormula('=IMAGE("' + rawValue + '", 4, 80, 80)');
+      }
+    }
+
+    // Tự động điều chỉnh chiều rộng cột ảnh (thumbnail)
+    sheet.setColumnWidth(8, 120);
+
     return ContentService.createTextOutput(JSON.stringify({
       status: 'success',
-      message: 'Đã lưu thành công dữ liệu khảo sát VKU',
+      message: 'Đã lưu thành công ' + insertedCount + ' bản ghi khảo sát VKU',
       insertedCount: insertedCount,
+      photosUploaded: insertedCount,
       timestamp: new Date().toISOString()
     })).setMimeType(ContentService.MimeType.JSON);
 
@@ -116,20 +173,20 @@ function doPost(e) {
     })).setMimeType(ContentService.MimeType.JSON);
 
   } finally {
-    // Luôn giải phóng lock để các request tiếp theo tiếp tục xử lý
     lock.releaseLock();
   }
 }
 
 /**
- * Xử lý yêu cầu GET để kiểm tra trạng thái hoạt động (Health check)
+ * Xử lý yêu cầu GET - Health check
  */
 function doGet() {
   return ContentService.createTextOutput(JSON.stringify({
     status: 'online',
     service: 'VKU Field Survey PWA Webhook API',
     school: 'Vietnam - Korea University of Information and Communication Technology (VKU)',
-    version: '1.0.0',
+    version: '2.0.0',
+    features: ['Drive photo upload', 'IMAGE formula', 'GPS', 'batch insert'],
     timestamp: new Date().toISOString()
   })).setMimeType(ContentService.MimeType.JSON);
 }
