@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="vkuGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0054A6"/>
+      <stop offset="100%" stop-color="#002D62"/>
+    </linearGradient>
+    <linearGradient id="orangeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF8A00"/>
+      <stop offset="100%" stop-color="#F37021"/>
+    </linearGradient>
+    <filter id="dropShadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+  
+  <!-- App Icon Background -->
+  <rect width="512" height="512" rx="110" fill="url(#vkuGrad)"/>
+  
+  <!-- Outer Accent Glow / Border -->
+  <rect x="16" y="16" width="480" height="480" rx="98" fill="none" stroke="#FFFFFF" stroke-width="4" stroke-opacity="0.15"/>
+  
+  <!-- Clipboard / Tablet Base -->
+  <g filter="url(#dropShadow)">
+    <rect x="100" y="110" width="312" height="330" rx="28" fill="#FFFFFF"/>
+    <rect x="176" y="80" width="160" height="56" rx="16" fill="url(#orangeGrad)"/>
+    <circle cx="256" cy="108" r="10" fill="#FFFFFF"/>
+    
+    <!-- Survey Content Lines -->
+    <rect x="140" y="180" width="160" height="18" rx="9" fill="#0054A6"/>
+    <rect x="140" y="220" width="232" height="12" rx="6" fill="#CBD5E1"/>
+    <rect x="140" y="250" width="190" height="12" rx="6" fill="#CBD5E1"/>
+    <rect x="140" y="280" width="220" height="12" rx="6" fill="#CBD5E1"/>
+    
+    <!-- Checkmarks -->
+    <circle cx="370" cy="189" r="14" fill="#10B981"/>
+    <path d="M364 189l4 4 8-8" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    
+    <!-- Location Pin Overlay -->
+    <g transform="translate(230, 270) scale(1.1)">
+      <circle cx="90" cy="80" r="44" fill="url(#orangeGrad)"/>
+      <path d="M90 54c-14.36 0-26 11.64-26 26 0 19.5 26 44 26 44s26-24.5 26-44c0-14.36-11.64-26-26-26zm0 35a9 9 0 1 1 0-18 9 9 0 0 1 0 18z" fill="#FFFFFF"/>
+    </g>
+    
+    <!-- VKU Text Badge -->
+    <rect x="140" y="370" width="90" height="32" rx="8" fill="#0054A6"/>
+    <text x="185" y="392" fill="#FFFFFF" font-family="system-ui, -apple-system, sans-serif" font-weight="900" font-size="17" text-anchor="middle" letter-spacing="1.5">VKU</text>
+  </g>
+</svg>
