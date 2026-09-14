@@ -8,7 +8,13 @@
  * 1. Mở Sheet VKU_Field_Survey_Data → Tiện ích mở rộng → Apps Script
  * 2. Xóa TOÀN BỘ code cũ, dán TOÀN BỘ nội dung file này vào editor
  * 3. Ctrl+S lưu, rồi Triển khai lại (New deployment / Update)
- *    - Loại: Web app, Execute as: Tôi, Access: Bất kỳ ai
+ *
+ * LƯU Ý QUAN TRỌNG VỀ QUYỀN DRIVE:
+ * - Nếu lần đầu dùng Drive photo upload → sẽ có popup xin quyền Drive
+ * - Nếu chưa cấp quyền Drive → script vẫn hoạt động bình thường
+ *   (ảnh giữ nguyên text, không crash)
+ * - Để cấp quyền: vào Apps Script → nhấn ▶ Chạy → doGet()
+ *   → popup hiện → Chấp nhận → Done
  */
 
 const SHEET_NAME = 'SurveyLogs';
@@ -16,48 +22,70 @@ const TARGET_SHEET_ID = '1W0r0bi6EApv2kiRdyDDqwDJr4mSztKFZJI4WDg8q0C8';
 const PHOTO_FOLDER_NAME = 'VKU_Survey_Photos';
 
 /**
+ * Kiểm tra xem script có quyền Drive không (fail-safe)
+ */
+function hasDriveAccess() {
+  try {
+    DriveApp.getFoldersByName('__test__');
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
  * Tạo hoặc tìm folder lưu ảnh trên Google Drive
+ * Trả về null nếu không có quyền Drive
  */
 function getOrCreatePhotoFolder() {
-  const folders = DriveApp.getFoldersByName(PHOTO_FOLDER_NAME);
-  if (folders.hasNext()) {
-    return folders.next();
+  try {
+    const folders = DriveApp.getFoldersByName(PHOTO_FOLDER_NAME);
+    if (folders.hasNext()) {
+      return folders.next();
+    }
+    const folder = DriveApp.createFolder(PHOTO_FOLDER_NAME);
+    folder.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    Logger.log('Đã tạo folder ảnh: ' + folder.getUrl());
+    return folder;
+  } catch (e) {
+    Logger.log('Không thể tạo folder Drive (chưa cấp quyền?): ' + e.toString());
+    return null;
   }
-  const folder = DriveApp.createFolder(PHOTO_FOLDER_NAME);
-  folder.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-  Logger.log('Đã tạo folder ảnh: ' + folder.getUrl());
-  return folder;
 }
 
 /**
  * Decode base64 data URL → file on Drive, returns { id, url }
- * Trả về null nếu không upload được (để fallback text)
+ * Trả về null nếu không upload được (fallback giữ text)
  */
 function uploadPhotoToDrive(dataUrl, filename, folder) {
   if (!dataUrl || dataUrl.length < 100) return null;
 
-  // Parse data URL: "data:image/jpeg;base64,AAAA..."
-  const match = dataUrl.match(/^data:image\/(\w+);base64,(.+)$/);
-  if (!match) return null;
+  try {
+    const match = dataUrl.match(/^data:image\/(\w+);base64,(.+)$/);
+    if (!match) return null;
 
-  const ext = match[1] === 'jpeg' ? 'jpg' : match[1];
-  const b64Data = match[2];
-  const mimeType = 'image/' + (match[1] === 'jpeg' ? 'jpeg' : match[1]);
+    const ext = match[1] === 'jpeg' ? 'jpg' : match[1];
+    const b64Data = match[2];
+    const mimeType = 'image/' + (match[1] === 'jpeg' ? 'jpeg' : match[1]);
 
-  const blob = Utilities.newBlob(
-    Utilities.base64Decode(b64Data),
-    mimeType,
-    filename + '.' + ext
-  );
+    const blob = Utilities.newBlob(
+      Utilities.base64Decode(b64Data),
+      mimeType,
+      filename + '.' + ext
+    );
 
-  const file = folder.createFile(blob);
-  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    const file = folder.createFile(blob);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
 
-  return {
-    id: file.getId(),
-    url: 'https://drive.google.com/uc?export=view&id=' + file.getId(),
-    directLink: file.getUrl()
-  };
+    return {
+      id: file.getId(),
+      url: 'https://drive.google.com/uc?export=view&id=' + file.getId(),
+      directLink: file.getUrl()
+    };
+  } catch (e) {
+    Logger.log('Upload ảnh thất bại: ' + e.toString());
+    return null;
+  }
 }
 
 /**
@@ -110,20 +138,22 @@ function doPost(e) {
     const records = postData.records || (postData.record ? [postData.record] : []);
     let insertedCount = 0;
 
-    // Tạo folder ảnh (chỉ 1 lần, reuse nếu có sẵn)
+    // Thử tạo folder ảnh Drive - nếu fail (chưa auth) thì skip photo upload
     const photoFolder = getOrCreatePhotoFolder();
+    const canUploadPhotos = photoFolder !== null;
 
     for (let i = 0; i < records.length; i++) {
       const rec = records[i];
 
-      // Upload ảnh lên Drive, lấy link
-      let photoUrl = '';
-      if (rec.photoBase64 && rec.photoBase64.length > 100) {
+      // Upload ảnh nếu có quyền Drive
+      let photoDisplay = rec.photoBase64 || '';
+      if (canUploadPhotos && rec.photoBase64 && rec.photoBase64.length > 100) {
         const photoName = 'survey_' + (rec.formattedTime || Date.now()).replace(/[\/\\: ]/g, '-') + '_' + i;
         const uploadResult = uploadPhotoToDrive(rec.photoBase64, photoName, photoFolder);
         if (uploadResult) {
-          photoUrl = uploadResult.url;
+          photoDisplay = uploadResult.url;  // Drive URL → dùng =IMAGE() sau
         }
+        // Nếu upload fail, giữ nguyên photoDisplay (text base64)
       }
 
       const row = [
@@ -134,7 +164,7 @@ function doPost(e) {
         rec.condition || 'Bình thường',
         rec.notes || '',
         rec.gps || '',
-        photoUrl  // Google Drive direct link → dùng =IMAGE() trong Sheet
+        photoDisplay
       ];
 
       sheet.appendRow(row);
@@ -142,26 +172,25 @@ function doPost(e) {
     }
 
     // Đặt công thức IMAGE() cho cột 8 (Ảnh hiện trường)
-    // Chỉ xử lý các hàng vừa thêm (không đụng hàng cũ)
-    const lastRow = sheet.getLastRow();
-    const totalRows = sheet.getMaxRows();
-    const formulaStartRow = lastRow - insertedCount + 1;
-    for (let r = formulaStartRow; r <= lastRow; r++) {
-      const cell = sheet.getRange(r, 8);  // cột H = 8
-      const rawValue = cell.getValue();
-      if (rawValue && rawValue.startsWith('https://drive.google.com')) {
-        cell.setFormula('=IMAGE("' + rawValue + '", 4, 80, 80)');
+    // Chỉ xử lý các hàng vừa thêm
+    if (canUploadPhotos) {
+      const lastRow = sheet.getLastRow();
+      const formulaStartRow = lastRow - insertedCount + 1;
+      for (let r = formulaStartRow; r <= lastRow; r++) {
+        const cell = sheet.getRange(r, 8);
+        const rawValue = cell.getValue();
+        if (rawValue && rawValue.startsWith('https://drive.google.com')) {
+          cell.setFormula('=IMAGE("' + rawValue + '", 4, 80, 80)');
+        }
       }
+      sheet.setColumnWidth(8, 120);
     }
-
-    // Tự động điều chỉnh chiều rộng cột ảnh (thumbnail)
-    sheet.setColumnWidth(8, 120);
 
     return ContentService.createTextOutput(JSON.stringify({
       status: 'success',
       message: 'Đã lưu thành công ' + insertedCount + ' bản ghi khảo sát VKU',
       insertedCount: insertedCount,
-      photosUploaded: insertedCount,
+      drivePhotos: canUploadPhotos,
       timestamp: new Date().toISOString()
     })).setMimeType(ContentService.MimeType.JSON);
 
@@ -179,14 +208,15 @@ function doPost(e) {
 
 /**
  * Xử lý yêu cầu GET - Health check
+ * Chạy lần đầu để grant quyền Drive
  */
 function doGet() {
   return ContentService.createTextOutput(JSON.stringify({
     status: 'online',
     service: 'VKU Field Survey PWA Webhook API',
     school: 'Vietnam - Korea University of Information and Communication Technology (VKU)',
-    version: '2.0.0',
-    features: ['Drive photo upload', 'IMAGE formula', 'GPS', 'batch insert'],
+    version: '2.1.0',
+    driveAccess: hasDriveAccess(),
     timestamp: new Date().toISOString()
   })).setMimeType(ContentService.MimeType.JSON);
 }
