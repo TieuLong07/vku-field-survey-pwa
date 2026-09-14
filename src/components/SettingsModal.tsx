@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Save, Link2, HelpCircle, Check, AlertCircle } from 'lucide-react';
-import { getWebhookUrl, setWebhookUrl } from '../services/syncService';
+import { getWebhookUrl, setWebhookUrl, DEFAULT_WEBHOOK_URL } from '../services/syncService';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -14,7 +14,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
 
   useEffect(() => {
     if (isOpen) {
-      setUrl(getWebhookUrl());
+      setUrl(getWebhookUrl() || DEFAULT_WEBHOOK_URL);
       setSavedSuccess(false);
     }
   }, [isOpen]);

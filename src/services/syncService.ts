@@ -4,10 +4,10 @@ import type { SurveyRecord, SyncResult } from '../types/survey';
 // Key lưu trữ Webhook URL trong localStorage
 export const STORAGE_KEY_WEBHOOK = 'vku_survey_webhook_url';
 
-export const DEFAULT_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbwYOUR_SCRIPT_ID_HERE/exec';
+export const DEFAULT_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbwJRpl0YYdK1zuqOxDW-Snmdlgd5G0NGZZYVQY6eMrFe-KvdpJoi4Sn3M-_p6v8vafP/exec';
 
 export function getWebhookUrl(): string {
-  return localStorage.getItem(STORAGE_KEY_WEBHOOK) || '';
+  return localStorage.getItem(STORAGE_KEY_WEBHOOK) || DEFAULT_WEBHOOK_URL;
 }
 
 export function setWebhookUrl(url: string): void {
