@@ -3,98 +3,36 @@
  * VKU FIELD SURVEY PWA - BACKEND SERVERLESS (GOOGLE APPS SCRIPT)
  * Trường Đại học Công nghệ Thông tin và Truyền thông Việt - Hàn (VKU)
  * =========================================================================
- *
- * HƯỚNG DẪN CẬP NHẬT:
- * 1. Mở Sheet VKU_Field_Survey_Data → Tiện ích mở rộng → Apps Script
- * 2. Xóa TOÀN BỘ code cũ, dán TOÀN BỘ nội dung file này vào editor
- * 3. Ctrl+S lưu, rồi Triển khai lại (New deployment / Update)
- *
- * LƯU Ý QUAN TRỌNG VỀ QUYỀN DRIVE:
- * - Nếu lần đầu dùng Drive photo upload → sẽ có popup xin quyền Drive
- * - Nếu chưa cấp quyền Drive → script vẫn hoạt động bình thường
- *   (ảnh giữ nguyên text, không crash)
- * - Để cấp quyền: vào Apps Script → nhấn ▶ Chạy → doGet()
- *   → popup hiện → Chấp nhận → Done
+ * 
+ * HƯỚNG DẪN THIẾT LẬP:
+ * 1. Mở Google Sheets mới: https://sheets.new
+ * 2. Đặt tên trang tính: "VKU_Field_Survey_Data"
+ *    LẤY SHEET_ID từ URL: /spreadsheets/d/{SHEET_ID}/edit
+ *    Sửa biến TARGET_SHEET_ID bên dưới cho khớp.
+ * 3. Vào menu: Tiện ích mở rộng (Extensions) -> Apps Script
+ * 4. Dán toàn bộ nội dung file này vào editor và nhấn Lưu (Ctrl + S)
+ * 5. Nhấn "Triển khai" (Deploy) -> "Tùy chọn triển khai mới" (New deployment)
+ * 6. Chọn loại: "Ứng dụng web" (Web app)
+ *    - Mô tả: "VKU Survey Sync API v1"
+ *    - Thực thi dưới dạng (Execute as): "Tôi" (Me - địa chỉ email của bạn)
+ *    - Ai có quyền truy cập (Who has access): "Bất kỳ ai" (Anyone)
+ * 7. Nhấn "Triển khai" -> Cấp quyền cho Script -> Copy URL dạng:
+ *    https://script.google.com/macros/s/.../exec
+ * 8. Dán URL trên vào mục "Cài đặt Webhook" trên ứng dụng VKU Survey PWA.
  */
 
 const SHEET_NAME = 'SurveyLogs';
 const TARGET_SHEET_ID = '1W0r0bi6EApv2kiRdyDDqwDJr4mSztKFZJI4WDg8q0C8';
-const PHOTO_FOLDER_NAME = 'VKU_Survey_Photos';
 
 /**
- * Kiểm tra xem script có quyền Drive không (fail-safe)
- */
-function hasDriveAccess() {
-  try {
-    DriveApp.getFoldersByName('__test__');
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
-
-/**
- * Tạo hoặc tìm folder lưu ảnh trên Google Drive
- * Trả về null nếu không có quyền Drive
- */
-function getOrCreatePhotoFolder() {
-  try {
-    const folders = DriveApp.getFoldersByName(PHOTO_FOLDER_NAME);
-    if (folders.hasNext()) {
-      return folders.next();
-    }
-    const folder = DriveApp.createFolder(PHOTO_FOLDER_NAME);
-    folder.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-    Logger.log('Đã tạo folder ảnh: ' + folder.getUrl());
-    return folder;
-  } catch (e) {
-    Logger.log('Không thể tạo folder Drive (chưa cấp quyền?): ' + e.toString());
-    return null;
-  }
-}
-
-/**
- * Decode base64 data URL → file on Drive, returns { id, url }
- * Trả về null nếu không upload được (fallback giữ text)
- */
-function uploadPhotoToDrive(dataUrl, filename, folder) {
-  if (!dataUrl || dataUrl.length < 100) return null;
-
-  try {
-    const match = dataUrl.match(/^data:image\/(\w+);base64,(.+)$/);
-    if (!match) return null;
-
-    const ext = match[1] === 'jpeg' ? 'jpg' : match[1];
-    const b64Data = match[2];
-    const mimeType = 'image/' + (match[1] === 'jpeg' ? 'jpeg' : match[1]);
-
-    const blob = Utilities.newBlob(
-      Utilities.base64Decode(b64Data),
-      mimeType,
-      filename + '.' + ext
-    );
-
-    const file = folder.createFile(blob);
-    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-
-    return {
-      id: file.getId(),
-      url: 'https://drive.google.com/uc?export=view&id=' + file.getId(),
-      directLink: file.getUrl()
-    };
-  } catch (e) {
-    Logger.log('Upload ảnh thất bại: ' + e.toString());
-    return null;
-  }
-}
-
-/**
- * Xử lý yêu cầu POST từ VKU Survey PWA
+ * Xử lý yêu cầu POST gửi từ VKU Survey PWA
  */
 function doPost(e) {
+  // Sử dụng LockService để tránh xung đột dữ liệu khi nhiều sinh viên/cán bộ gửi đồng thời
   const lock = LockService.getScriptLock();
-
+  
   try {
+    // Chờ tối đa 30 giây để lấy quyền ghi lock
     const success = lock.tryLock(30000);
     if (!success) {
       return ContentService.createTextOutput(JSON.stringify({
@@ -106,6 +44,7 @@ function doPost(e) {
     const ss = SpreadsheetApp.openById(TARGET_SHEET_ID);
     let sheet = ss.getSheetByName(SHEET_NAME);
 
+    // Nếu trang tính chưa tồn tại, tự động tạo mới và định dạng Header
     if (!sheet) {
       sheet = ss.insertSheet(SHEET_NAME);
       const headers = [
@@ -116,10 +55,11 @@ function doPost(e) {
         'Tình trạng',
         'Ghi chú',
         'Tọa độ GPS',
-        'Ảnh hiện trường'
+        'Ảnh hiện trường (Base64 / Image Link)'
       ];
       sheet.appendRow(headers);
-
+      
+      // Định dạng Header phong cách thương hiệu VKU
       const headerRange = sheet.getRange(1, 1, 1, headers.length);
       headerRange.setBackground('#0054A6');
       headerRange.setFontColor('#FFFFFF');
@@ -128,6 +68,7 @@ function doPost(e) {
       sheet.setFrozenRows(1);
     }
 
+    // Phân tích dữ liệu JSON nhận được
     let postData = {};
     if (e.postData && e.postData.contents) {
       postData = JSON.parse(e.postData.contents);
@@ -138,22 +79,14 @@ function doPost(e) {
     const records = postData.records || (postData.record ? [postData.record] : []);
     let insertedCount = 0;
 
-    // Thử tạo folder ảnh Drive - nếu fail (chưa auth) thì skip photo upload
-    const photoFolder = getOrCreatePhotoFolder();
-    const canUploadPhotos = photoFolder !== null;
-
     for (let i = 0; i < records.length; i++) {
       const rec = records[i];
-
-      // Upload ảnh nếu có quyền Drive
+      
+      // Xử lý ảnh: Cắt ngắn hiển thị hoặc lưu Drive nếu chuỗi Base64 quá dài
       let photoDisplay = rec.photoBase64 || '';
-      if (canUploadPhotos && rec.photoBase64 && rec.photoBase64.length > 100) {
-        const photoName = 'survey_' + (rec.formattedTime || Date.now()).replace(/[\/\\: ]/g, '-') + '_' + i;
-        const uploadResult = uploadPhotoToDrive(rec.photoBase64, photoName, photoFolder);
-        if (uploadResult) {
-          photoDisplay = uploadResult.url;  // Drive URL → dùng =IMAGE() sau
-        }
-        // Nếu upload fail, giữ nguyên photoDisplay (text base64)
+      if (photoDisplay.length > 50000) {
+        // Tránh vượt quá giới hạn 50,000 ký tự trong 1 ô Google Sheets
+        photoDisplay = photoDisplay.substring(0, 49990) + '...[TRUNCATED]';
       }
 
       const row = [
@@ -171,26 +104,10 @@ function doPost(e) {
       insertedCount++;
     }
 
-    // Đặt công thức IMAGE() cho cột 8 (Ảnh hiện trường)
-    // Chỉ xử lý các hàng vừa thêm
-    if (canUploadPhotos) {
-      const lastRow = sheet.getLastRow();
-      const formulaStartRow = lastRow - insertedCount + 1;
-      for (let r = formulaStartRow; r <= lastRow; r++) {
-        const cell = sheet.getRange(r, 8);
-        const rawValue = cell.getValue();
-        if (rawValue && rawValue.startsWith('https://drive.google.com')) {
-          cell.setFormula('=IMAGE("' + rawValue + '", 4, 80, 80)');
-        }
-      }
-      sheet.setColumnWidth(8, 120);
-    }
-
     return ContentService.createTextOutput(JSON.stringify({
       status: 'success',
-      message: 'Đã lưu thành công ' + insertedCount + ' bản ghi khảo sát VKU',
+      message: 'Đã lưu thành công dữ liệu khảo sát VKU',
       insertedCount: insertedCount,
-      drivePhotos: canUploadPhotos,
       timestamp: new Date().toISOString()
     })).setMimeType(ContentService.MimeType.JSON);
 
@@ -202,21 +119,20 @@ function doPost(e) {
     })).setMimeType(ContentService.MimeType.JSON);
 
   } finally {
+    // Luôn giải phóng lock để các request tiếp theo tiếp tục xử lý
     lock.releaseLock();
   }
 }
 
 /**
- * Xử lý yêu cầu GET - Health check
- * Chạy lần đầu để grant quyền Drive
+ * Xử lý yêu cầu GET để kiểm tra trạng thái hoạt động (Health check)
  */
 function doGet() {
   return ContentService.createTextOutput(JSON.stringify({
     status: 'online',
     service: 'VKU Field Survey PWA Webhook API',
     school: 'Vietnam - Korea University of Information and Communication Technology (VKU)',
-    version: '2.1.0',
-    driveAccess: hasDriveAccess(),
+    version: '1.0.0',
     timestamp: new Date().toISOString()
   })).setMimeType(ContentService.MimeType.JSON);
 }
